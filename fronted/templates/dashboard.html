@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="stylesheet" href="/static/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AASS Dashboard</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<h1>AASS Live Dashboard</h1>
+
+<div class="card">
+    <div class="card-header">Filter Options</div>
+    <div class="filter">
+        <label>Service: 
+            <select id="serviceFilter">
+                <option value="all">All</option>
+                <option>WebApp</option>
+                <option>DB</option>
+                <option>SSH</option>
+                <option>MQTT</option>
+            </select>
+        </label>
+        <label>Attack Type: 
+            <select id="attackTypeFilter">
+                <option value="all">All</option>
+                <option>SQLi</option>
+                <option>XSS</option>
+                <option>Brute Force</option>
+                <option>DoS</option>
+            </select>
+        </label>
+        <label>Show last 
+            <input id="limitInput" type="number" min="1" value="10" style="width:60px;">
+            entries
+        </label>
+        <button onclick="applyFilters()">Apply Filters</button>
+    </div>
+    
+    <table id="logTable">
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Service</th>
+                <th>Attack Type</th>
+                <th>Message</th>
+            </tr>
+        </thead>
+        <tbody id="logBody">
+            <tr>
+                <td colspan="4" style="text-align: center; color: #00ff41;">Waiting for attack logs...</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <div class="card-header">Mutation Events Timeline</div>
+    <ul id="mutationList">
+        <li style="background: rgba(0, 255, 65, 0.1); color: #00ff41; border-left-color: #00ff41;">No mutation events yet</li>
+    </ul>
+</div>
+
+<div class="card">
+    <div class="card-header">Attack Analytics: Count Before/After Last Mutation</div>
+    <canvas id="analyticsChart" width="600" height="300"></canvas>
+</div>
+
+<script>
+    // Wait for all libraries to load
+    window.addEventListener('load', function() {
+        initDashboard();
+    });
+
+    function initDashboard() {
+        const socket = io();
+
+        // Persist logs globally so they aren't reset
+        if (!window.logs) window.logs = [];
+        if (!window.mutations) window.mutations = [];
+
+        const logs = window.logs;
+        const mutations = window.mutations;
+
+        // Initialize chart
+        function initChart() {
+            const ctx = document.getElementById('analyticsChart');
+            if (!ctx || !window.Chart) {
+                console.error('Chart.js not loaded or canvas not found');
+                return;
+            }
+
+            analyticsChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Before Last Mutation', 'After Last Mutation'], 
+                    datasets: [{
+                        label: '# Attacks', 
+                        data: [0, 0], 
+                        backgroundColor: ['rgba(0, 255, 65, 0.6)', 'rgba(255, 0, 85, 0.6)'],
+                        borderColor: ['#00ff41', '#ff0055'],
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#00ff41',
+                                font: {
+                                    family: 'Courier New',
+                                    size: 14
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1,
+                                color: '#00ff41',
+                                font: {
+                                    family: 'Courier New'
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0, 255, 65, 0.1)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#00ff41',
+                                font: {
+                                    family: 'Courier New'
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0, 255, 65, 0.1)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Listen for new logs
+        socket.on('new_log', function(data) {
+            logs.push(data);
+            renderLogs();
+            renderAnalytics();
+        });
+        socket.on('new_attack_log', function(data) {
+          console.log("Received new_attack_log:", data);
+          logs.push(data);
+          renderLogs();
+          renderAnalytics();
+        });
+        // Listen for mutation events
+        socket.on('mutation_event', function(data) {
+            mutations.push(data);
+            renderMutations();
+            renderAnalytics();
+        });
+
+        // Rendering functions
+        function renderLogs() {
+            // Apply filter
+            let filtered = logs.slice();
+            const svc = document.getElementById('serviceFilter').value;
+            const atk = document.getElementById('attackTypeFilter').value;
+            const limit = parseInt(document.getElementById('limitInput').value) || 10;
+            if (svc !== "all") filtered = filtered.filter(l => l.service === svc);
+            if (atk !== "all") filtered = filtered.filter(l => l.attack_type === atk);
+            filtered = filtered.slice(-limit);
+
+            // Render table
+            const tbody = document.getElementById('logBody');
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #00ff41;">No logs match the current filters</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = '';
+            filtered.forEach(log => {
+                const row = `<tr>
+                    <td>${log.timestamp}</td>
+                    <td>${log.service}</td>
+                    <td>${log.attack_type}</td>
+                    <td>${log.message}</td>
+                </tr>`;
+                tbody.innerHTML += row;
+            });
+        }
+
+        function renderMutations() {
+            const ul = document.getElementById('mutationList');
+            ul.innerHTML = '';
+            if (mutations.length === 0) {
+                ul.innerHTML = '<li style="background: rgba(0, 255, 65, 0.1); color: #00ff41; border-left-color: #00ff41; box-shadow: none;">No mutation events yet</li>';
+                return;
+            }
+            mutations.forEach(m => {
+                ul.innerHTML += `<li>
+                    [${m.timestamp}] ${m.service}: ${m.mutation_type} (${m.details})
+                </li>`;
+            });
+        }
+
+        // Basic analytics: count before and after last mutation
+        function renderAnalytics() {
+            if (!analyticsChart) {
+                return;
+            }
+            
+            // If there was a mutation, use timestamp to split logs
+            let before = 0, after = 0;
+            let t = null;
+            if (mutations.length > 0) t = mutations[mutations.length-1].timestamp;
+            logs.forEach(log => {
+                if (!t || log.timestamp < t) before++;
+                else after++;
+            });
+            analyticsChart.data.datasets[0].data = [before, after];
+            analyticsChart.update();
+        }
+
+        window.applyFilters = function() {
+            renderLogs();
+        }
+
+        // Initial setup
+        initChart();
+        renderLogs();
+        renderMutations();
+        renderAnalytics();
+    }
+</script>
+</body>
+</html>
